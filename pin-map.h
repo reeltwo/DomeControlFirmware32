@@ -41,9 +41,9 @@
 #define BUTTON_RIGHT            GPIO_PIN_BASE+3
 #define BUTTON_DOWN             GPIO_PIN_BASE+4
 
-#define GPIO_DOUT1_PIN          GPIO_PIN_BASE+5
-#define GPIO_DOUT2_PIN          GPIO_PIN_BASE+6
-#define GPIO_DOUT3_PIN			GPIO_PIN_BASE+7
+#define DOUT1_PIN          		GPIO_PIN_BASE+5
+#define DOUT2_PIN          		GPIO_PIN_BASE+6
+#define DOUT3_PIN				GPIO_PIN_BASE+7
 
 #elif defined(LILYGO_MINI32)
 

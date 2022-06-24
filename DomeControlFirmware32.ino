@@ -147,6 +147,23 @@ CustomPinManager sPinManager;
 PinManager sPinManager;
 #endif
 
+byte sDigitalPin[] = {
+    DOUT1_PIN,
+    DOUT2_PIN,
+    DOUT3_PIN,
+    DOUT4_PIN,
+    DOUT5_PIN
+#ifdef DOUT6_PIN
+    ,DOUT6_PIN
+#endif
+#ifdef DOUT7_PIN
+    ,DOUT7_PIN
+#endif
+#ifdef DOUT8_PIN
+    ,DOUT8_PIN
+#endif
+};
+
 ///////////////////////////////////
 
 #ifdef USE_SCREEN
@@ -335,20 +352,16 @@ static void setByteBit(uint8_t &byte, uint8_t bit, uint8_t val)
 static uint8_t sPinState;
 static void setDigitalPin(unsigned pin, bool state)
 {
-    if (pin-- <= 8)
+    if (pin-- <= SizeOfArray(sDigitalPin))
     {
         setByteBit(sPinState, pin, state);
-    #ifdef USE_I2C_GPIO_EXPANDER
-        #ifdef GPIO_DOUT1_PIN
-        #endif
-        // digitalWrite(DOUT1_PIN+pin, (state) ? HIGH : LOW);
-    #endif
+        sPinManager.digitalWrite(sDigitalPin[pin], (state) ? HIGH : LOW);
     }
 }
 
 static void toggleDigitalPin(unsigned pin)
 {
-    if (pin <= 8)
+    if (pin <= SizeOfArray(sDigitalPin))
     {
         setDigitalPin(pin, !getByteBit(sPinState, pin-1));
     }

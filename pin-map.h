@@ -35,11 +35,11 @@
 #define GPIO_PIN_BASE           200
 
 // Pin numbers greater equal GPIO_PIN_BASE sent to GPIO expander
-#define BUTTON_IN               GPIO_PIN_BASE+0
-#define BUTTON_LEFT             GPIO_PIN_BASE+1
-#define BUTTON_UP               GPIO_PIN_BASE+2
-#define BUTTON_RIGHT            GPIO_PIN_BASE+3
-#define BUTTON_DOWN             GPIO_PIN_BASE+4
+#define BUTTON_IN               GPIO_PIN_BASE+0   /* SW1 */
+#define BUTTON_LEFT             GPIO_PIN_BASE+1   /* SW2 */
+#define BUTTON_UP               GPIO_PIN_BASE+2   /* SW3 */
+#define BUTTON_RIGHT            GPIO_PIN_BASE+3   /* SW4 */
+#define BUTTON_DOWN             GPIO_PIN_BASE+4   /* SW5 */
 
 #define DOUT1_PIN          		GPIO_PIN_BASE+5
 #define DOUT2_PIN          		GPIO_PIN_BASE+6
@@ -50,11 +50,11 @@
 #define PIN_ENCODER_A           2
 #define PIN_ENCODER_B           4
 
-#define BUTTON_IN               33
-#define BUTTON_LEFT             25
-#define BUTTON_UP               26
-#define BUTTON_RIGHT            27
-#define BUTTON_DOWN             23
+#define BUTTON_IN               33   /* SW1 */
+#define BUTTON_LEFT             25   /* SW2 */
+#define BUTTON_UP               26   /* SW3 */
+#define BUTTON_RIGHT            27   /* SW4 */
+#define BUTTON_DOWN             23   /* SW5 */
 
 #define RXD1_PIN                34
 #define RXD2_PIN                17
@@ -62,7 +62,7 @@
 #define RXD3_PIN                32
 #define TXD3_PIN                0
 
-#define DOUT1_PIN          		2
+#define DOUT1_PIN          		5
 #define DOUT2_PIN          		13
 #define DOUT3_PIN				14
 #define DOUT4_PIN				18

@@ -5,11 +5,11 @@
 // CONFIGURABLE OPTIONS
 ///////////////////////////////////
 
-#define USE_DEBUG               // Define to enable debug diagnostic
-#define USE_SCREEN              // Define if using LCD and Rotary encoder
-#undef  USE_SERVOS              // Define is enabling servo output on digital out pins
-#undef  USE_DOME_DEBUG          // Define for dome motor specific debug
-#undef  USE_DOME_SENSOR_DEBUG   // Define for dome sensor ring specific debug
+#define USE_DEBUG                       // Define to enable debug diagnostic
+//#define USE_SCREEN                      // Define if using LCD and Rotary encoder
+#undef  USE_SERVOS                      // Define is enabling servo output on digital out pins
+#define USE_DOME_DEBUG                  // Define for dome motor specific debug
+#define USE_DOME_SENSOR_SERIAL_DEBUG    // Define for dome sensor ring specific debug
 
 #define DEFAULT_HOME_POSITION           0
 #define DEFAULT_SABER_BAUD              9600
@@ -64,6 +64,7 @@
 #define DOME_SENSOR_SERIAL_BAUD 57600
 
 #define PACKET_SERIAL_TIMEOUT   1500
+#define EEPROM_SIZE             4096
 
 ///////////////////////////////////
 
@@ -78,6 +79,7 @@
 #include "core/AnalogMonitor.h"
 #include "core/StringUtils.h"
 #include "core/EEPROMSettings.h"
+#include "core/PinManager.h"
 #include "drive/DomeSensorSerialPosition.h"
 #include "drive/SerialConsoleController.h"
 #include "drive/DomeDriveSabertooth.h"
@@ -220,7 +222,6 @@ public:
 
     virtual void animate() override
     {
-        return;
         switch (read())
         {
             case kHome:
@@ -476,10 +477,14 @@ void scan_i2c()
 void setup()
 {
     REELTWO_READY();
-    DOME_SENSOR_SERIAL.begin(DOME_SENSOR_SERIAL_BAUD, RXD2_PIN, TXD2_PIN);
+    DOME_SENSOR_SERIAL.begin(DOME_SENSOR_SERIAL_BAUD, SERIAL_8N1, RXD1_PIN, 0 /* not used */);
 
     Serial.print("Droid Dome Controller - ");
     Serial.println(__DATE__);
+    if (!EEPROM.begin(EEPROM_SIZE))
+    {
+        Serial.println("Failed to initialize EEPROM");
+    }
     if (sSettings.read())
     {
         Serial.println("Settings Restored");
@@ -493,7 +498,7 @@ void setup()
             Serial.println("Readback Success");
         }
     }
-    DOME_DRIVE_SERIAL.begin(sSettings.fSaberBaudRate, RXD3_PIN, TXD3_PIN);
+    DOME_DRIVE_SERIAL.begin(sSettings.fSaberBaudRate, SERIAL_8N1, RXD2_PIN, TXD2_PIN);
 #ifdef MARC_SERIAL
     MARC_SERIAL.begin(sSettings.fMarcBaudRate);
 #endif

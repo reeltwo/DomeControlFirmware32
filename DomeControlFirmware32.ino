@@ -94,7 +94,7 @@
 #include "core/StringUtils.h"
 #include "core/EEPROMSettings.h"
 #include "core/PinManager.h"
-#include "drive/DomeSensorSerialPosition.h"
+#include "drive/DomeSensorRingSerialListener.h"
 #include "drive/SerialConsoleController.h"
 #include "drive/DomeDriveSabertooth.h"
 #include "encoder/ServoDecoder.h"
@@ -1081,7 +1081,7 @@ void processConfigureCommand(const char* cmd)
         if (sSettings.deleteCommand(seq))
             Serial.println("Deleted");
     }
-    else if (startswith(cmd, "#DPSPEED") && isdigit(*cmd))
+    else if (startswith(cmd, "#DPMAXSPEED") && isdigit(*cmd))
     {
         int speed = strtolu(cmd, &cmd);
         sSettings.fMaxSpeed = min(speed, MAX_SPEED);
@@ -1103,6 +1103,12 @@ void processConfigureCommand(const char* cmd)
     {
         int speed = strtolu(cmd, &cmd);
         sSettings.fDomeSpeedSeek = min(speed, MAX_SPEED);
+        updateSettings();
+    }
+    else if (startswith(cmd, "#DPTARGETSPEED") && isdigit(*cmd))
+    {
+        int speed = strtolu(cmd, &cmd);
+        sSettings.fDomeSpeedTarget = min(speed, MAX_SPEED);
         updateSettings();
     }
     else if (startswith(cmd, "#DPMINSPEED") && isdigit(*cmd))

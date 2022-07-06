@@ -21,23 +21,32 @@
 #define DEFAULT_MAX_SPEED               50
 #define DEFAULT_RANDOM_MODE             false
 #define DEFAULT_HOME_MODE               false
-#define DEFAULT_SPEED_SCALING           false
+#define DEFAULT_SPEED_SCALING           true
+// If true no automatic movement will happen until the dome has been moved by joystick first.
+// If false automatic movement can happen on startup.
+#define DEFAULT_AUTO_SAFETY             true
 #define DEFAULT_INVERTED                false
 #define DEFAULT_PWM_MIN_PULSE           1000
 #define DEFAULT_PWM_MAX_PULSE           2000
 #define DEFAULT_PWM_NEUTRAL_PULSE       1500
 #define DEFAULT_PWM_DEADBAND            5
-#define DEFAULT_ACCELERATION_SCALE      100
-#define DEFAULT_DECELERATION_SCALE      20
-#define DEFAULT_DOME_MIN_DELAY          6
-#define DEFAULT_DOME_MAX_DELAY          8
+#define DEFAULT_ACCELERATION_SCALE      20
+#define DEFAULT_DECELERATION_SCALE      5
+#define DEFAULT_DOME_HOME_MIN_DELAY     6
+#define DEFAULT_DOME_HOME_MAX_DELAY     8
+#define DEFAULT_DOME_SEEK_MIN_DELAY     6
+#define DEFAULT_DOME_SEEK_MAX_DELAY     8
+#define DEFAULT_DOME_TARGET_MIN_DELAY   0
+#define DEFAULT_DOME_TARGET_MAX_DELAY   1
 #define DEFAULT_DOME_SEEK_LEFT          80
 #define DEFAULT_DOME_SEEK_RIGHT         80
 #define DEFAULT_DOME_FUDGE              5
 #define DEFAULT_DOME_SPEED_HOME         40
 #define DEFAULT_DOME_SPEED_SEEK         30
+#define DEFAULT_DOME_SPEED_TARGET       100
 #define DEFAULT_DOME_SPEED_MIN          15
 #define DEFAULT_DIGITAL_PINS            0
+#define DEFAULT_TIMEOUT                 5
 
 #define MAX_SPEED               100
 #define MAX_SPEED_F             float(MAX_SPEED)
@@ -47,6 +56,7 @@
 #define MAX_SEEK_DELAY          255
 #define MAX_ACC_SCALE           255
 #define MAX_DEC_SCALE           255
+#define MAX_TIMEOUT             30
 #define MOVEMODE_MAX_INTERVAL   5       // default interval between random commands
 #define MAX_COMMANDS            100
 
@@ -67,8 +77,12 @@
 
 ///////////////////////////////////
 
-#define AMIDALA_AUTOMATION_PCB
-//#define LILYGO_MINI32
+#define EEPROM_SIZE             4096
+
+///////////////////////////////////
+
+//#define AMIDALA_AUTOMATION_PCB
+#define LILYGO_MINI32
 #include "pin-map.h"
 
 ///////////////////////////////////
@@ -78,7 +92,7 @@
 #include "core/AnalogMonitor.h"
 #include "core/StringUtils.h"
 #include "core/EEPROMSettings.h"
-#include "drive/DomeSensorSerialPosition.h"
+#include "drive/DomeSensorRingSerialListener.h"
 #include "drive/SerialConsoleController.h"
 #include "drive/DomeDriveSabertooth.h"
 #include "encoder/ServoDecoder.h"
@@ -205,7 +219,8 @@ ServoDispatchDirect<SizeOfArray(sServoSettings)> sServoDispatch(sServoSettings);
 
 ////////////////////////////////
 
-DomeSensorSerialPosition sDomePosition(DOME_SENSOR_SERIAL);
+DomeSensorRingSerialListener sDomeRing(DOME_SENSOR_SERIAL);
+DomePosition sDomePosition(sDomeRing);
 
 class SerialDomeController : public SerialConsoleController, public AnimatedEvent
 {
@@ -220,7 +235,6 @@ public:
 
     virtual void animate() override
     {
-        return;
         switch (read())
         {
             case kHome:
@@ -272,23 +286,30 @@ struct DomeControllerSettings
     bool fPWMInput = DEFAULT_PWM_INPUT;
     bool fPWMOutput = DEFAULT_PWM_OUTPUT;
     uint8_t fMaxSpeed = DEFAULT_MAX_SPEED;
+    uint8_t fTimeout = DEFAULT_TIMEOUT;
     bool fRandomMode = DEFAULT_RANDOM_MODE;
     bool fHomeMode = DEFAULT_HOME_MODE;
     bool fSpeedScaling = DEFAULT_SPEED_SCALING;
     bool fInverted = DEFAULT_INVERTED;
+    bool fAutoSafety = DEFAULT_AUTO_SAFETY;
     uint16_t fPWMMinPulse = DEFAULT_PWM_MIN_PULSE;
     uint16_t fPWMMaxPulse = DEFAULT_PWM_MAX_PULSE;
     uint16_t fPWMNeutralPulse = DEFAULT_PWM_NEUTRAL_PULSE;
     uint8_t fPWMDeadbandPercent = DEFAULT_PWM_DEADBAND;
     uint8_t fAccScale = DEFAULT_ACCELERATION_SCALE;
     uint8_t fDecScale = DEFAULT_DECELERATION_SCALE; 
-    uint8_t fDomeMinDelay = DEFAULT_DOME_MIN_DELAY;
-    uint8_t fDomeMaxDelay = DEFAULT_DOME_MAX_DELAY;
+    uint8_t fDomeSeekMinDelay = DEFAULT_DOME_SEEK_MIN_DELAY;
+    uint8_t fDomeSeekMaxDelay = DEFAULT_DOME_SEEK_MAX_DELAY;
+    uint8_t fDomeHomeMinDelay = DEFAULT_DOME_HOME_MIN_DELAY;
+    uint8_t fDomeHomeMaxDelay = DEFAULT_DOME_HOME_MAX_DELAY;
+    uint8_t fDomeTargetMinDelay = DEFAULT_DOME_TARGET_MIN_DELAY;
+    uint8_t fDomeTargetMaxDelay = DEFAULT_DOME_TARGET_MAX_DELAY;
     uint8_t fDomeSeekLeft = DEFAULT_DOME_SEEK_LEFT;
     uint8_t fDomeSeekRight = DEFAULT_DOME_SEEK_RIGHT;
     uint8_t fDomeFudge = DEFAULT_DOME_FUDGE;
     uint8_t fDomeSpeedHome = DEFAULT_DOME_SPEED_HOME;
     uint8_t fDomeSpeedSeek = DEFAULT_DOME_SPEED_SEEK;
+    uint8_t fDomeSpeedTarget = DEFAULT_DOME_SPEED_TARGET;
     uint8_t fDomeSpeedMin = DEFAULT_DOME_SPEED_MIN;
     uint8_t fDigitalPins = DEFAULT_DIGITAL_PINS;
 
@@ -307,6 +328,7 @@ struct DomeControllerSettings
 #endif
 };
 EEPROMSettings<DomeControllerSettings> sSettings;
+bool sDomeHasMovedManually = false;
 
 ///////////////////////////////////////////////////////////////////////////////
 
@@ -327,7 +349,14 @@ static void pulseInputChanged(uint16_t pulse)
         drive = float(pulse - neutral_pulse) / (max_pulse - neutral_pulse);
     }
     if (float(deadband)/100 >= abs(drive))
+    {
         drive = 0;
+    }
+    else if (!sDomeHasMovedManually)
+    {
+        restoreDomeSettings();
+        sDomeHasMovedManually = true; 
+    }
     if (sSettings.fPWMInput)
         sDomeDrive.driveDome(drive);
 }
@@ -376,16 +405,32 @@ static void restoreDomeSettings()
     sDomeDrive.setInverted(sSettings.fInverted);
     sDomeDrive.setThrottleAccelerationScale(sSettings.fAccScale);
     sDomeDrive.setThrottleAccelerationScale(sSettings.fDecScale);
+    sDomePosition.setTimeout(sSettings.fTimeout);
     sDomePosition.setDomeHomePosition(sSettings.fHomePosition);
-    sDomePosition.setDomeMinDelay(sSettings.fDomeMinDelay);
-    sDomePosition.setDomeMaxDelay(sSettings.fDomeMaxDelay);
+    sDomePosition.setDomeSeekMinDelay(sSettings.fDomeSeekMinDelay);
+    sDomePosition.setDomeSeekMaxDelay(sSettings.fDomeSeekMaxDelay);
     sDomePosition.setDomeSeekLeftDegrees(sSettings.fDomeSeekLeft);
     sDomePosition.setDomeSeekRightDegrees(sSettings.fDomeSeekRight);
-    sDomePosition.setDomeHomeSpeed(sSettings.fDomeSpeedHome);
     sDomePosition.setDomeSeekSpeed(sSettings.fDomeSpeedSeek);
+
+    sDomePosition.setDomeHomeSpeed(sSettings.fDomeSpeedHome);
+    sDomePosition.setDomeHomeMinDelay(sSettings.fDomeHomeMinDelay);
+    sDomePosition.setDomeHomeMaxDelay(sSettings.fDomeHomeMaxDelay);
+
+    sDomePosition.setDomeTargetSpeed(sSettings.fDomeSpeedTarget);
+    sDomePosition.setDomeTargetMinDelay(sSettings.fDomeTargetMinDelay);
+    sDomePosition.setDomeTargetMaxDelay(sSettings.fDomeTargetMaxDelay);
+
     sDomePosition.setDomeMinSpeed(sSettings.fDomeSpeedMin);
     sDomePosition.setDomeFudgeFactor(sSettings.fDomeFudge);
-    if (sSettings.fRandomMode)
+    if (sSettings.fAutoSafety && !sDomeHasMovedManually)
+    {
+        if (sSettings.fRandomMode)
+            DEBUG_PRINTLN("AUTO SAFETY PREVENTED RANDOM SEEK MODE");
+        else if (sSettings.fHomeMode)
+            DEBUG_PRINTLN("AUTO SAFETY PREVENTED HOME MODE");
+    }
+    else if (sSettings.fRandomMode)
         sDomePosition.setDomeDefaultMode(DomePosition::kRandom);
     else if (sSettings.fHomeMode)
         sDomePosition.setDomeDefaultMode(DomePosition::kHome);
@@ -480,7 +525,11 @@ void setup()
 
     Serial.print("Droid Dome Controller - ");
     Serial.println(__DATE__);
-    if (sSettings.read())
+    if (!EEPROM.begin(EEPROM_SIZE))
+    {
+        Serial.println("Failed to initialize EEPROM");
+    }
+    else if (sSettings.read())
     {
         Serial.println("Settings Restored");
     }
@@ -521,7 +570,6 @@ void setup()
 #endif
     restoreDomeSettings();
     sDomeDrive.setDomePosition(&sDomePosition);
-    sDomeDrive.setEasingMethod(Easing::BounceEaseInOut);
     sDomeDrive.setEnable(true);
     Serial.println("READY");
 }
@@ -571,6 +619,8 @@ static const char* sOnOffStrings[] = {
 #include "menus/utility/MenuScreen.h"
 
 #include "menus/DomeFudgeScreen.h"
+#include "menus/DomeHomeMaxDelayScreen.h"
+#include "menus/DomeHomeMinDelayScreen.h"
 #include "menus/DomeHomeSpeedScreen.h"
 #include "menus/DomeMinSpeedScreen.h"
 #include "menus/DomeSeekLeftScreen.h"
@@ -579,6 +629,8 @@ static const char* sOnOffStrings[] = {
 #include "menus/DomeSeekRightScreen.h"
 #include "menus/DomeSeekSpeedScreen.h"
 #include "menus/DomeSpeedScreen.h"
+#include "menus/DomeTargetMaxDelayScreen.h"
+#include "menus/DomeTargetMinDelayScreen.h"
 #include "menus/EraseSettingsScreen.h"
 #include "menus/HomeModeScreen.h"
 #include "menus/MainScreen.h"
@@ -590,6 +642,7 @@ static const char* sOnOffStrings[] = {
 #include "menus/SaberBaudRateScreen.h"
 #include "menus/SelectScreen.h"
 #include "menus/SetAccScaleScreen.h"
+#include "menus/SetAutoSafetyScreen.h"
 #include "menus/SetDeadbandPercentScreen.h"
 #include "menus/SetDecScaleScreen.h"
 #include "menus/SetHomeScreen.h"
@@ -600,7 +653,9 @@ static const char* sOnOffStrings[] = {
 #include "menus/SetPWMInputScreen.h"
 #include "menus/SetPWMOutputScreen.h"
 #include "menus/SetSpeedScalingScreen.h"
+#include "menus/SetTimeoutScreen.h"
 #include "menus/SettingsScreen.h"
+#include "menus/SettingsUpdatedScreen.h"
 #include "menus/SplashScreen.h"
 
 #endif
@@ -613,6 +668,7 @@ static const char* sOnOffStrings[] = {
 static bool sNextCommand;
 static bool sProcessing;
 static unsigned sPos;
+static bool sWaitTarget;
 static uint32_t sWaitNextSerialCommand;
 static char sBuffer[CONSOLE_BUFFER_SIZE];
 static bool sCmdNextCommand;
@@ -639,6 +695,11 @@ bool processDomePositionCommand(const char* cmd)
     {
         case 'S':
         {
+            if (sSettings.fAutoSafety && !sDomeHasMovedManually)
+            {
+                Serial.println("AUTO SAFETY PREVENTED PLAY SEQUENCE");
+                break;
+            }
             sDomeDrive.autonomousDriveDome(0);
 
             // play sequence
@@ -652,9 +713,14 @@ bool processDomePositionCommand(const char* cmd)
                 }
                 else
                 {
-                    Serial.println("Play Sequence: "+String(seq));
-                    DEBUG_PRINTLN(sCmdBuffer);
+                    Serial.print("Play Sequence: "); Serial.println(seq);
+                    Serial.println(sCmdBuffer);
                 }
+            }
+            else
+            {
+                // Invalid
+                return false;
             }
             break;
         }
@@ -729,11 +795,17 @@ bool processDomePositionCommand(const char* cmd)
         case 'A':
         case 'D':
         {
+            if (sSettings.fAutoSafety && !sDomeHasMovedManually)
+            {
+                Serial.println("AUTO SAFETY PREVENTED TARGET MODE");
+                break;
+            }
             bool relative = (cmd[-1] == 'D');
 
             // position absolute degree
-            float speed = 0;
-            float maxspeed = 0;
+            sWaitTarget = true;
+            float speed = sDomePosition.getDomeSpeedTarget();
+            float minspeed = sDomePosition.getDomeMinSpeed();
             int32_t degrees;
             if (*cmd == 'R' && (cmd[1] == ',' || cmd[1] == '\0'))
             {
@@ -756,57 +828,61 @@ bool processDomePositionCommand(const char* cmd)
                 {
                     speedpercentage = strtolu(cmd+1, &cmd);
                 }
-                if (*cmd == ',' || *cmd == '\0')
+                if (*cmd == '+' || *cmd == '\0')
                 {
-                    speedpercentage = min(max(int(speedpercentage), 0), MAX_SPEED);
+                    speedpercentage = min(max(int(speedpercentage), int(minspeed*100)), MAX_SPEED);
                     speed = speedpercentage / MAX_SPEED_F;
                 }
             }
-            if (*cmd == ',')
+            if (*cmd == '+')
             {
-                uint32_t speedpercentage;
-                if (cmd[1] == 'R' && (cmd[2] == ',' || cmd[2] == '\0'))
-                {
-                    speedpercentage = speed * MAX_SPEED_F + random(MAX_SPEED - speed * MAX_SPEED_F);
-                    cmd += 2;
-                }
-                else
-                {
-                    speedpercentage = strtolu(cmd+1, &cmd);
-                }
-                if (*cmd == '\0')
-                {
-                    speedpercentage = max(min(max(int(speedpercentage), 0), MAX_SPEED), int(speed)*MAX_SPEED);
-                    maxspeed = speedpercentage / MAX_SPEED_F;
-                }
+                sWaitTarget = false;
             }
+            sDomeDrive.autonomousDriveDome(0);
             if (*cmd == '\0')
             {
-                Serial.print("ROTARY DEGREE: "); Serial.println(degrees);
-                sDomeDrive.autonomousDriveDome(0);
+                Serial.print("ROTARY DEGREE: "); Serial.print(degrees); Serial.print(" speed: "); Serial.println(speed);
                 if (relative)
                 {
-                    sDomePosition.setDomeTargetPosition(int(sDomePosition.getDomePosition()) + degrees);
+                    sDomePosition.setDomeRelativeTargetPosition(degrees);
                 }
                 else
                 {
-                    // TODO use max speed
-                    // lifter.rotaryMotorAbsolutePosition(degrees, speed, maxspeed);
                     sDomePosition.setDomeHomeRelativeTargetPosition(degrees);
                 }
+                if (sDomePosition.getDomeSpeedTarget() != speed)
+                {
+                    sDomePosition.setDomeTargetSpeed(speed * 100);
+                }
+                sDomePosition.setTargetReached([]() {
+                    Serial.println("REACHED TARGET: "+String(sDomePosition.getHomeRelativeDomePosition()));
+                    sDomePosition.setDomeMode(sDomePosition.getDomeDefaultMode());
+                    sDomePosition.setDomeTargetSpeed(sSettings.fDomeSpeedTarget);
+                    sWaitTarget = false;
+                });
                 sDomePosition.setDomeMode(DomePosition::kTarget);
+            }
+            else
+            {
+                // Invalid
+                return false;
             }
             break;
         }
         case 'R':
         {
+            if (sSettings.fAutoSafety && !sDomeHasMovedManually)
+            {
+                Serial.println("AUTO SAFETY PREVENTED ROTATE MODE");
+                break;
+            }
             // spin rotary speed
             int32_t speed = 0;
             if (*cmd == 'R')
             {
                 speed = strtolu(cmd+1, &cmd);
                 if (speed == 0)
-                    speed = 80;
+                    speed = int(sSettings.fDomeSpeedTarget);
                 speed = max(speed, int(sSettings.fDomeSpeedMin));
                 speed = -speed + random(speed*2);
                 if (abs(speed) < sSettings.fDomeSpeedMin)
@@ -818,23 +894,65 @@ bool processDomePositionCommand(const char* cmd)
                 if (abs(speed) < sSettings.fDomeSpeedMin)
                     speed = 0;
             }
+            int32_t targetSpeed = sDomePosition.getDomeSpeedTarget() * 100;
+            speed = min(max(speed, -targetSpeed), targetSpeed);
+            sDomeDrive.autonomousDriveDome(0);
             if (*cmd == '\0')
             {
-                speed = min(max(speed, -100), 100);
                 Serial.print("ROTATE SPEED: "); Serial.println(speed);
                 sDomeDrive.autonomousDriveDome(float(speed) / MAX_SPEED_F);
+            }
+            else
+            {
+                // Invalid
+                return false;
             }
             break;
         }
         case 'H':
         {
+            if (sSettings.fAutoSafety && !sDomeHasMovedManually)
+            {
+                Serial.println("AUTO SAFETY PREVENTED SEEK HOME");
+                break;
+            }
+            sWaitTarget = true;
+            int32_t speed = 0;
+            if (*cmd == 'R')
+            {
+                speed = strtolu(cmd+1, &cmd);
+                if (speed == 0)
+                    speed = int(sSettings.fDomeSpeedTarget);
+            }
+            else if (isdigit(*cmd))
+            {
+                speed = strtol(cmd, &cmd);
+            }
+            else
+            {
+                speed = sDomePosition.getDomeSpeedHome() * 100;
+            }
+            speed = max(speed, int(sSettings.fDomeSpeedMin));
+            int32_t targetSpeed = sDomePosition.getDomeSpeedTarget() * 100;
+            speed = min(max(speed, -targetSpeed), targetSpeed);
+            if (sDomePosition.getDomeSpeedTarget() != speed)
+            {
+                sDomePosition.setDomeTargetSpeed(speed);
+            }
             sDomeDrive.autonomousDriveDome(0);
-            sDomePosition.setDomeMode(DomePosition::kTarget);
             sDomePosition.setDomeHomeRelativeTargetPosition(0);
+                sDomePosition.setTargetReached([]() {
+                    Serial.println("REACHED HOME: "+String(sDomePosition.getHomeRelativeDomePosition()));
+                    sDomePosition.setDomeMode(sDomePosition.getDomeDefaultMode());
+                    sDomePosition.setDomeTargetSpeed(sSettings.fDomeSpeedTarget);
+                    sWaitTarget = false;
+                });
+            sDomePosition.setDomeMode(DomePosition::kTarget);
             break;
         }
         case 'Z':
         {
+            sDomeDrive.autonomousDriveDome(0);
             restoreDomeSettings();
             break;
         }
@@ -842,26 +960,45 @@ bool processDomePositionCommand(const char* cmd)
         {
             // wait seconds
             bool rand = false;
-            uint32_t seconds;
-            Serial.print("WAIT: "); Serial.println(cmd);
+            int randlower = 1;
+            int seconds;
             if ((rand = (*cmd == 'R')))
                 cmd++;
             seconds = strtolu(cmd, &cmd);
+            seconds = min(max(seconds, 0), 600);
             if (rand)
             {
-                Serial.println(seconds);
                 if (seconds == 0)
                     seconds = 6;
-                seconds = random(1, seconds);
-                Serial.println(seconds);
+                if (*cmd == ',')
+                {
+                    randlower = strtolu(cmd+1, &cmd);
+                    randlower = min(max(randlower, 0), 600);
+                }
+                if (randlower > seconds)
+                {
+                    uint32_t t = seconds;
+                    seconds = randlower;
+                    randlower = t;
+                }
+                seconds = random(randlower, seconds);
             }
             Serial.print("WAIT SECONDS: "); Serial.println(seconds);
             if (*cmd == '\0')
             {
                 sWaitNextSerialCommand = millis() + uint32_t(min(max(int(seconds), 1), 600)) * 1000L;
             }
+            else
+            {
+                // Invalid
+                return false;
+            }
             break;
         }
+        default:
+            // INVALID
+            sDomeDrive.autonomousDriveDome(0);
+            return false;
     }
     return true;
 }
@@ -884,26 +1021,39 @@ void processConfigureCommand(const char* cmd)
     else if (startswith(cmd, "#DPCONFIG"))
     {
         Serial.print("HomePos="); Serial.println(sSettings.fHomePosition);
-        Serial.print("Speed="); Serial.println(sSettings.fMaxSpeed);
+        Serial.print("MaxSpeed="); Serial.println(sSettings.fMaxSpeed);
+        Serial.print("MinSpeed="); Serial.println(sSettings.fDomeSpeedMin);
         Serial.print("SeekMode="); Serial.println(sSettings.fRandomMode);
         Serial.print("HomeMode="); Serial.println(sSettings.fHomeMode);
         Serial.print("Scaling="); Serial.println(sSettings.fSpeedScaling);
         Serial.print("Inverted="); Serial.println(sSettings.fInverted);
+        Serial.print("Timeout="); Serial.println(sSettings.fTimeout);
+        Serial.print("AutoSafety="); Serial.println(sSettings.fAutoSafety);
         Serial.print("AccelerationScale="); Serial.println(sSettings.fAccScale);
         Serial.print("DecelerationScale="); Serial.println(sSettings.fDecScale);
-        Serial.print("MinDelay="); Serial.println(sSettings.fDomeMinDelay);
-        Serial.print("MaxDelay="); Serial.println(sSettings.fDomeMaxDelay);
+        Serial.print("HomeMinDelay="); Serial.println(sSettings.fDomeHomeMinDelay);
+        Serial.print("HomeMaxDelay="); Serial.println(sSettings.fDomeHomeMaxDelay);
+        Serial.print("SeekMinDelay="); Serial.println(sSettings.fDomeSeekMinDelay);
+        Serial.print("SeekMaxDelay="); Serial.println(sSettings.fDomeSeekMaxDelay);
+        Serial.print("TargetMinDelay="); Serial.println(sSettings.fDomeTargetMinDelay);
+        Serial.print("TargetMaxDelay="); Serial.println(sSettings.fDomeTargetMaxDelay);
         Serial.print("SeekLeft="); Serial.println(sSettings.fDomeSeekLeft);
         Serial.print("SeekRight="); Serial.println(sSettings.fDomeSeekRight);
         Serial.print("Fudge="); Serial.println(sSettings.fDomeFudge);
         Serial.print("SpeedHome="); Serial.println(sSettings.fDomeSpeedHome);
         Serial.print("SpeedSeek="); Serial.println(sSettings.fDomeSpeedSeek);
+        Serial.print("SpeedTarget="); Serial.println(sSettings.fDomeSpeedTarget);
         Serial.print("SaberBaud="); Serial.println(sSettings.fSaberBaudRate);
         Serial.print("MarcBaud="); Serial.println(sSettings.fMarcBaudRate);
         Serial.print("SerialIn="); Serial.println(sSettings.fPacketSerialInput);
         Serial.print("SerialOut="); Serial.println(sSettings.fPacketSerialOutput);
         Serial.print("PWMIn="); Serial.println(sSettings.fPWMInput);
         Serial.print("PWMOut="); Serial.println(sSettings.fPWMOutput);
+        Serial.print("PWMMinPulse="); Serial.println(sSettings.fPWMMinPulse);
+        Serial.print("PWMMaxPulse="); Serial.println(sSettings.fPWMMaxPulse);
+        Serial.print("PWMNeutralPulse="); Serial.println(sSettings.fPWMNeutralPulse);
+        Serial.print("PWMDeadband="); Serial.println(sSettings.fPWMDeadbandPercent);
+
         Serial.print("DOut=");
         // Write out the pins backwards (pin1 first)
         uint8_t pins = sSettings.fDigitalPins;
@@ -913,6 +1063,9 @@ void processConfigureCommand(const char* cmd)
             pins >>= 1;
         }
         Serial.println();
+    }
+    else if (startswith(cmd, "#DPSETUP"))
+    {
     }
     else if (startswith(cmd, "#DPL"))
     {
@@ -930,6 +1083,12 @@ void processConfigureCommand(const char* cmd)
     {
         int speed = strtolu(cmd, &cmd);
         sSettings.fMaxSpeed = min(speed, MAX_SPEED);
+        updateSettings();
+    }
+    else if (startswith(cmd, "#DPTIMEOUT") && isdigit(*cmd))
+    {
+        int speed = strtolu(cmd, &cmd);
+        sSettings.fTimeout = min(speed, MAX_TIMEOUT);
         updateSettings();
     }
     else if (startswith(cmd, "#DPHOMESPEED") && isdigit(*cmd))
@@ -965,13 +1124,37 @@ void processConfigureCommand(const char* cmd)
     else if (startswith(cmd, "#DPSEEKMIN") && isdigit(*cmd))
     {
         int speed = strtolu(cmd, &cmd);
-        sSettings.fDomeMinDelay = min(speed, MAX_SEEK_DELAY);
+        sSettings.fDomeSeekMinDelay = min(speed, MAX_SEEK_DELAY);
         updateSettings();
     }
     else if (startswith(cmd, "#DPSEEKMAX") && isdigit(*cmd))
     {
         int speed = strtolu(cmd, &cmd);
-        sSettings.fDomeMaxDelay = min(speed, MAX_SEEK_DELAY);
+        sSettings.fDomeSeekMaxDelay = min(speed, MAX_SEEK_DELAY);
+        updateSettings();
+    }
+    else if (startswith(cmd, "#DPHOMEMIN") && isdigit(*cmd))
+    {
+        int speed = strtolu(cmd, &cmd);
+        sSettings.fDomeHomeMinDelay = min(speed, MAX_SEEK_DELAY);
+        updateSettings();
+    }
+    else if (startswith(cmd, "#DPHOMEMAX") && isdigit(*cmd))
+    {
+        int speed = strtolu(cmd, &cmd);
+        sSettings.fDomeHomeMaxDelay = min(speed, MAX_SEEK_DELAY);
+        updateSettings();
+    }
+    else if (startswith(cmd, "#DPTARGETMIN") && isdigit(*cmd))
+    {
+        int speed = strtolu(cmd, &cmd);
+        sSettings.fDomeTargetMinDelay = min(speed, MAX_SEEK_DELAY);
+        updateSettings();
+    }
+    else if (startswith(cmd, "#DPTARGETMAX") && isdigit(*cmd))
+    {
+        int speed = strtolu(cmd, &cmd);
+        sSettings.fDomeTargetMaxDelay = min(speed, MAX_SEEK_DELAY);
         updateSettings();
     }
     else if (startswith(cmd, "#DPFUDGE") && isdigit(*cmd))
@@ -980,10 +1163,18 @@ void processConfigureCommand(const char* cmd)
         sSettings.fDomeFudge = min(speed, MAX_FUDGE_FACTOR);
         updateSettings();
     }
-    else if (startswith(cmd, "#DPHOMEPOS") && isdigit(*cmd))
+    else if (startswith(cmd, "#DPHOMEPOS"))
     {
-        int pos = strtolu(cmd, &cmd);
-        sDomePosition.setDomeHomeRelativeHomePosition(pos);
+        if (isdigit(*cmd))
+        {
+            int pos = strtolu(cmd, &cmd);
+            sDomePosition.setDomeHomeRelativeHomePosition(pos);
+        }
+        else
+        {
+            Serial.print("\nCURRENT POSITION: "); Serial.println(sDomePosition.getDomePosition());
+            sDomePosition.setDomeHomePosition(sDomePosition.getDomePosition());
+        }
         sSettings.fHomePosition = sDomePosition.getDomeHome();
         updateSettings();
     }
@@ -1009,6 +1200,12 @@ void processConfigureCommand(const char* cmd)
     {
         int mode = strtolu(cmd, &cmd);
         sSettings.fInverted = (mode != 0);
+        updateSettings();
+    }
+    else if (startswith(cmd, "#DPAUTOSAFETY") && isdigit(*cmd))
+    {
+        int mode = strtolu(cmd, &cmd);
+        sSettings.fAutoSafety = (mode != 0);
         updateSettings();
     }
     else if (startswith(cmd, "#DPASCALE") && isdigit(*cmd))
@@ -1096,6 +1293,11 @@ void processConfigureCommand(const char* cmd)
             {
                 switch (*cmd)
                 {
+                    case 'Z':
+                    {
+                        Serial.println("RESET");
+                        break;
+                    }
                     case 'R':
                     {
                         // speed
@@ -1180,69 +1382,76 @@ void processConfigureCommand(const char* cmd)
                         Serial.println();
                         break;
                     }
-                    case 'M':
-                    {
-                        // move
-                        uint8_t nextSpeed = sSettings.fDomeSpeedSeek;
-                        int nextIntervalMin = MOVEMODE_MAX_INTERVAL;
-                        int nextIntervalMax = MOVEMODE_MAX_INTERVAL;
-                        cmd++;
-                        if (*cmd == ',')
-                        {
-                            // command speed
-                            nextSpeed = strtolu(cmd+1, &cmd);
-                            nextSpeed = max(nextSpeed, sSettings.fDomeSpeedSeek);
-                        }
-                        if (*cmd == ',')
-                        {
-                            // command interval
-                            nextIntervalMin = strtolu(cmd+1, &cmd);
-                            nextIntervalMin = max(nextIntervalMin, 1); // minimum duration 1 second
-                        }
-                        if (*cmd == ',')
-                        {
-                            // command interval
-                            nextIntervalMax = strtolu(cmd+1, &cmd);
-                            nextIntervalMax = max(nextIntervalMax, nextIntervalMin+1); // minimum duration + 1 second
-                        }
-                        Serial.print("Move Continous: ");
-                        Serial.print(" Speed: ");
-                        Serial.print(nextSpeed);
-                        Serial.print(" Min: ");
-                        Serial.print(nextIntervalMin);
-                        Serial.print(" Max: ");
-                        Serial.println(nextIntervalMax);
-                        break;
-                    }
                     case 'W':
                     {
                         // seconds
-                        bool randseconds = false;
+                        bool rand = false;
+                        int randlower = 1;
                         int seconds = 0;
                         cmd++;
                         if (*cmd == 'R')
                         {
-                            randseconds = true;
+                            rand = true;
                             cmd++;
                         }
                         seconds = strtolu(cmd, &cmd);
                         seconds = min(max(seconds, 0), 600);
+                        if (rand)
+                        {
+                            if (seconds == 0)
+                                seconds = 6;
+                            if (*cmd == ',')
+                            {
+                                randlower = strtolu(cmd+1, &cmd);
+                                randlower = min(max(randlower, 0), 600);
+                            }
+                            if (randlower > seconds)
+                            {
+                                uint32_t t = seconds;
+                                seconds = randlower;
+                                randlower = t;
+                            }
+                        }
                         Serial.print("Wait Seconds: ");
-                        if (randseconds)
-                            Serial.println("Random");
-                        else
+                        if (rand)
+                        {
+                            Serial.print("Random ");
+                            Serial.print(randlower);
+                            Serial.print(" - ");
                             Serial.println(seconds);
+                        }
+                        else
+                        {
+                            Serial.println(seconds);
+                        }
                         break;
                     }
                     case 'H':
                     {
                         // return home
-                        unsigned speed = sSettings.fDomeSpeedHome; cmd++;
-                        if (isdigit(*cmd))
+                        int speed = sSettings.fDomeSpeedHome; cmd++;
+                        if (*cmd == 'R')
                         {
-                            speed = min(unsigned(max(strtolu(cmd, &cmd), 1u)), 100u);
+                            speed = strtolu(cmd+1, &cmd);
+                            speed = max(speed, int(sSettings.fDomeSpeedMin));
+                            Serial.print("Return Home: Speed: Random ");
+                            Serial.print(sSettings.fDomeSpeedMin);
+                            Serial.print(" - ");
+                            Serial.println(speed);
                         }
-                        Serial.print("Return Home: Speed: "); Serial.println(speed);
+                        else if (isdigit(*cmd))
+                        {
+                            speed = strtolu(cmd+1, &cmd);
+                            speed = max(speed, int(sSettings.fDomeSpeedMin));
+                            Serial.print("Return Home: Speed: ");
+                            Serial.println(speed);
+                        }
+                        else
+                        {
+                            speed = sDomePosition.getDomeSpeedHome() * 100;
+                            Serial.print("Return Home: Speed: ");
+                            Serial.println(speed);
+                        }
                         break;
                     }
                     default:
@@ -1294,7 +1503,7 @@ bool processCommand(const char* cmd, bool firstCommand)
     {
         if (cmd[0] != ':')
         {
-            Serial.println("Invalid");
+            DEBUG_PRINTLN("Invalid");
             return false;
         }
         return processDomePositionCommand(cmd+1);
@@ -1309,12 +1518,11 @@ bool processCommand(const char* cmd, bool firstCommand)
             processConfigureCommand(cmd);
             return true;
         default:
-            Serial.println("Invalid");
+            DEBUG_PRINTLN("Invalid");
             break;
     }
     return false;
 }
-
 
 ///////////////////////////////////////////////////////////////////////////////
 
@@ -1499,6 +1707,11 @@ void loop()
     }
     if (sSerialMotorActivity)
     {
+        if (!sDomeHasMovedManually)
+        {
+            restoreDomeSettings();
+            sDomeHasMovedManually = true; 
+        }
         sDomeDrive.driveDome(sLastMotorValue);
     }
 

@@ -684,6 +684,7 @@ static void runSerialCommand()
 
 static void resetSerialCommand()
 {
+    sWaitTarget = false;
     sWaitNextSerialCommand = 0;
     sNextCommand = false;
     sProcessing = (sCmdBuffer[0] == ':');
@@ -1570,7 +1571,7 @@ void loop()
         }
     }
 #endif
-    if (sProcessing && millis() > sWaitNextSerialCommand)
+    if (sProcessing && !sWaitTarget && millis() > sWaitNextSerialCommand)
     {
         if (sCmdBuffer[0] == ':')
         {
